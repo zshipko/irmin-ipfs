@@ -1,0 +1,4 @@
+(library
+ (name asst)
+ (libraries lwt.unix astring cryptokit)
+ (preprocess (pps ppx_deriving_yojson)))
