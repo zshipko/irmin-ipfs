@@ -1,1 +1,1 @@
-type t = [ `Msg of string ]
+type t = [ `Msg of string | `Not_found of string ]

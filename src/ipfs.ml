@@ -1,7 +1,11 @@
 open Lwt.Syntax
 
 module Hash = struct
-  type t = string
+  type t = Hash : string -> t
+
+  let to_string (Hash h) = h
+
+  let of_string s = Hash s
 end
 
 let exec cmd args : (string, Error.t) result Lwt.t =
@@ -17,6 +21,12 @@ let exec cmd args : (string, Error.t) result Lwt.t =
 let exe = ref "ipfs"
 
 let add filename : (Hash.t, Error.t) result Lwt.t =
-  exec !exe [| "add"; "-Q"; filename |]
+  let+ x = exec !exe [| "add"; "-Q"; filename |] in
+  Result.map Hash.of_string x
 
-let get hash = exec !exe [| "cat"; hash |]
+let fetch hash : (string, Error.t) result Lwt.t =
+  exec !exe [| "cat"; Hash.to_string hash |]
+
+let get ~output hash : (unit, Error.t) result Lwt.t =
+  let+ x = exec !exe [| "get"; "-o"; output; Hash.to_string hash |] in
+  Result.map (fun _ -> ()) x
