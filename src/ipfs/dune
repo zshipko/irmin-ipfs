@@ -1,0 +1,3 @@
+(library
+ (name ipfs)
+ (libraries ezjsonm curl.lwt uri astring))
