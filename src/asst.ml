@@ -7,13 +7,17 @@ type t = { key : Key.t }
 
 let v key = { key }
 
-let add t filename =
-  Crypto.with_encrypted_file ~key:t.key filename (fun tmp -> Ipfs.add tmp)
+let init () = v (Key.gen ())
 
-let get t hash =
-  let+ data = Ipfs.get hash in
-  match data with
-  | Ok data ->
-      let s = Crypto.decrypt ~key:t.key data in
-      Ok s
-  | Error e -> Error e
+module Object = struct
+  let create t filename =
+    Crypto.with_encrypted_file ~key:t.key filename (fun tmp -> Ipfs.add tmp)
+
+  let get t hash =
+    let+ data = Ipfs.get hash in
+    match data with
+    | Ok data ->
+        let s = Crypto.decrypt ~key:t.key data in
+        Ok s
+    | Error e -> Error e
+end
