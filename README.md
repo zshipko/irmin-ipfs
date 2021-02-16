@@ -1,3 +1,3 @@
-# asst
+# merz
 
-A storage assistant for IPFS
+A cluster and storage assistant for IPFS
