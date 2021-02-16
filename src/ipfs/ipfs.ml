@@ -102,4 +102,8 @@ module Pin = struct
   let add t hash =
     let url = url ~query:[ ("arg", Cid.to_string hash) ] t "/pin/add" in
     request url
+
+  let rm t hash =
+    let url = url ~query:[ ("arg", Cid.to_string hash) ] t "/pin/rm" in
+    request url
 end

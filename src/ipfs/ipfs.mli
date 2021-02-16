@@ -22,4 +22,6 @@ val get : t -> Cid.t -> (unit, error) result Lwt.t
 
 module Pin : sig
   val add : t -> Cid.t -> (unit, error) result Lwt.t
+
+  val rm : t -> Cid.t -> (unit, error) result Lwt.t
 end
