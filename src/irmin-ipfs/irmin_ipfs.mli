@@ -15,6 +15,10 @@ module type S = sig
   (** [flush t] flush read-write pack on disk. Raises [RO_Not_Allowed] if called
       by a readonly instance.*)
 
+  val sync : repo -> unit
+
+  val clear : repo -> unit Lwt.t
+
   val integrity_check :
     ?ppf:Format.formatter ->
     auto_repair:bool ->

@@ -38,6 +38,10 @@ module type S = sig
   (** [flush t] flush read-write pack on disk. Raises [RO_Not_Allowed] if called
       by a readonly instance.*)
 
+  val sync : repo -> unit
+
+  val clear : repo -> unit Lwt.t
+
   val integrity_check :
     ?ppf:Format.formatter ->
     auto_repair:bool ->
@@ -213,13 +217,21 @@ struct
                     let commit : 'a Commit.t = (node, commit) in
                     f contents node commit)))
 
+      let flush t =
+        Index.flush t.index;
+        Commit.CA.flush ~index:true (snd (commit_t t))
+
+      let sync t =
+        Index.sync t.index;
+        Commit.CA.sync (snd (commit_t t));
+        Node.CA.sync (snd (node_t t))
+
       let close t =
+        (try flush t with _ -> ());
         Index.close t.index;
         let* () = Node.CA.close (snd (node_t t)) in
         let* () = Branch.close t.branch in
         Commit.CA.close (snd (commit_t t))
-
-      let flush t = Commit.CA.flush ~index:true (snd (commit_t t))
 
       let v config =
         let root = Pack_config.root config in
@@ -243,8 +255,8 @@ struct
            system crash, the flush_callback might not make with the disk. In
            this case, when the store is reopened, [integrity_check] needs to be
            called to repair the store. *)
-        (f := fun () -> Commit.CA.flush ~index:true commit);
         let x = { contents; node; commit; branch; config; index } in
+        (f := fun () -> flush x);
         Gc.finalise (fun x -> flush x) x;
         x
 
@@ -252,7 +264,11 @@ struct
 
       (** Stores share instances so one clear is enough. *)
 
-      (*let clear t = Contents.CA.clear (contents_t t)*)
+      let clear t =
+        let* () = Branch.clear (branch_t t) in
+        let* () = Commit.CA.clear (snd (commit_t t)) in
+        let* () = Node.CA.clear (snd (node_t t)) in
+        Contents.CA.clear (contents_t t)
 
       module Dict = Irmin_pack.Dict.Make (Version)
 
@@ -377,6 +393,10 @@ struct
   let reconstruct_index = X.Repo.Reconstruct_index.reconstruct
 
   let flush = X.Repo.flush
+
+  let sync = X.Repo.sync
+
+  let clear = X.Repo.clear
 
   include Irmin.Of_private (X)
 end
