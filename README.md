@@ -1,3 +1,4 @@
-# merz
+# irmin-ipfs
 
-A cluster and storage assistant for IPFS
+An [IPFS](https://github.com/ipfs/ipfs) backend for [irmin](https://github.com/mirage/irmin)
+

@@ -1,4 +1,5 @@
 (library
- (name merz)
+ (name irmin_ipfs)
+ (public_name irmin-ipfs)
  (libraries irmin-unix ipfs cryptokit)
  (preprocess (pps ppx_irmin)))

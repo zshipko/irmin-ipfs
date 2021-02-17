@@ -38,7 +38,7 @@ let handle = function
   | Ok Curl.CURLE_OK -> Ok ()
   | Ok e | Error e -> Error (`Msg (Curl.strerror e))
 
-let request ?files ?(mode = `POST) ?output url =
+let build_request ?files ?file_data ?(mode = `POST) ?output url =
   let req = Curl.init () in
   let () = Curl.set_url req (Uri.to_string url) in
   let () =
@@ -60,10 +60,26 @@ let request ?files ?(mode = `POST) ?output url =
     | None -> ()
   in
   let () =
+    match file_data with
+    | Some files ->
+        let files =
+          List.map
+            (fun (name, data) ->
+              Curl.CURLFORM_CONTENT (name, data, Curl.DEFAULT))
+            files
+        in
+        Curl.set_httppost req files
+    | None -> ()
+  in
+  let () =
     match output with
     | Some output -> Curl.set_writefunction req (writer output)
     | None -> ()
   in
+  req
+
+let request ?files ?file_data ?(mode = `POST) ?output url =
+  let req = build_request ?files ?file_data ~mode ?output url in
   let+ code =
     Lwt.catch
       (fun () ->
@@ -76,10 +92,39 @@ let request ?files ?(mode = `POST) ?output url =
   Curl.cleanup req;
   handle code
 
-let add t ~filename =
+let hash t data =
+  let output = Buffer.create 256 in
+  let url = url t ~query:[ ("only-hash", "true") ] "/add" in
+  let+ res = request ~output ~file_data:[ ("hash", data) ] url in
+  Result.map
+    (fun _ ->
+      let json = Ezjsonm.from_string (Buffer.contents output) in
+      Ezjsonm.find json [ "Hash" ] |> Ezjsonm.get_string |> Cid.of_string)
+    res
+
+let hash' t data =
+  let output = Buffer.create 256 in
+  let url = url t ~query:[ ("only-hash", "true") ] "/add" in
+  let req = build_request ~output ~file_data:[ ("hash", data) ] url in
+  Curl.perform req;
+  Curl.cleanup req;
+  let json = Ezjsonm.from_string (Buffer.contents output) in
+  Ezjsonm.find json [ "Hash" ] |> Ezjsonm.get_string |> Cid.of_string
+
+let add_file t ~filename =
   let output = Buffer.create 256 in
   let url = url t "/add" in
   let+ res = request ~output ~files:[ filename ] url in
+  Result.map
+    (fun _ ->
+      let json = Ezjsonm.from_string (Buffer.contents output) in
+      Ezjsonm.find json [ "Hash" ] |> Ezjsonm.get_string |> Cid.of_string)
+    res
+
+let add t ?(name = "") s =
+  let output = Buffer.create 256 in
+  let url = url t "/add" in
+  let+ res = request ~output ~file_data:[ (name, s) ] url in
   Result.map
     (fun _ ->
       let json = Ezjsonm.from_string (Buffer.contents output) in

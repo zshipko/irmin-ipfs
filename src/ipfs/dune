@@ -1,3 +1,4 @@
 (library
  (name ipfs)
- (libraries ezjsonm curl.lwt uri astring))
+ (public_name ipfs)
+ (libraries ezjsonm curl.lwt uri astring zarith))

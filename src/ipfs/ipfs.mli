@@ -14,7 +14,13 @@ val v : url:string -> t
 
 val default : t
 
-val add : t -> filename:string -> (Cid.t, error) result Lwt.t
+val hash : t -> string -> (Cid.t, error) result Lwt.t
+
+val hash' : t -> string -> Cid.t
+
+val add_file : t -> filename:string -> (Cid.t, error) result Lwt.t
+
+val add : t -> ?name:string -> string -> (Cid.t, error) result Lwt.t
 
 val cat : t -> Cid.t -> (string, error) result Lwt.t
 
