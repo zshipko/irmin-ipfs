@@ -6,6 +6,24 @@ module Conn : sig
   module Default : S
 end
 
+module type S = sig
+  include Irmin.S
+
+  val reconstruct_index : ?output:string -> Irmin.config -> unit
+
+  val flush : repo -> unit
+  (** [flush t] flush read-write pack on disk. Raises [RO_Not_Allowed] if called
+      by a readonly instance.*)
+
+  val integrity_check :
+    ?ppf:Format.formatter ->
+    auto_repair:bool ->
+    repo ->
+    ( [> `Fixed of int | `No_error ],
+      [> `Cannot_fix of string | `Corrupted of int ] )
+    result
+end
+
 module Make : functor
   (Conn : Conn.S)
   (M : Irmin.Metadata.S)
@@ -13,7 +31,7 @@ module Make : functor
   (P : Irmin.Path.S)
   (B : Irmin.Branch.S)
   ->
-  Irmin.S
+  S
     with type metadata = M.t
      and type contents = C.t
      and type key = P.t
@@ -22,7 +40,7 @@ module Make : functor
      and type hash = Ipfs.Cid.t
 
 module KV (Conn : Conn.S) (C : Irmin.Contents.S) :
-  Irmin.S
+  S
     with type metadata = unit
      and type contents = C.t
      and type key = Irmin.Path.String_list.t
@@ -31,7 +49,7 @@ module KV (Conn : Conn.S) (C : Irmin.Contents.S) :
      and type hash = Ipfs.Cid.t
 
 module Default :
-  Irmin.S
+  S
     with type metadata = unit
      and type contents = string
      and type key = Irmin.Path.String_list.t
