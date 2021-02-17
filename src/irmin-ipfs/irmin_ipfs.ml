@@ -1,69 +1,11 @@
 open Lwt.Syntax
 open Lwt.Infix
 module Ipfs = Ipfs
-module Crypto = Crypto
-module Key = Crypto.Key
 
 module Config = struct
   let stable_hash = 32
 
   let entries = 256
-end
-
-module Value = struct
-  type t = Encrypted of string | Plaintext of string [@@deriving irmin]
-
-  let merge = Irmin.Merge.(option (idempotent t))
-end
-
-module Store = Irmin_pack.KV (Config) (Value)
-
-type t = { ipfs : Ipfs.t; repo : Store.Repo.t; secret : Key.t }
-
-let v ?(ipfs = Ipfs.default) ?secret ~root =
-  let secret = Option.get ~default:(Key.gen ()) secret in
-  let config = Irmin_pack.config root in
-  let+ repo = Store.Repo.v config in
-  { secret; repo; ipfs }
-
-module Encrypted = struct
-  let create t ~filename =
-    Crypto.with_encrypted_file ~key:t.secret filename (fun tmp ->
-        Ipfs.add_file t.ipfs ~filename:tmp)
-
-  let fetch t hash =
-    let+ data = Ipfs.cat t.ipfs hash in
-    match data with
-    | Ok data ->
-        let s = Crypto.decrypt ~key:t.secret data in
-        Ok s
-    | Error e -> Error e
-
-  let download t ~output hash =
-    let* x = fetch t hash in
-    match x with
-    | Ok (Some s) -> (
-        match Crypto.decrypt ~key:t.secret s with
-        | Some x ->
-            let* () = Lwt_io.chars_to_file output (Lwt_stream.of_string x) in
-            Lwt.return_ok ()
-        | None -> Lwt.return_error (`Not_found (Ipfs.Cid.to_string hash)))
-    | Ok None -> Lwt.return_error `Invalid_key
-    | Error e -> Lwt.return_error (e :> Error.t)
-end
-
-module Plaintext = struct
-  let create t ~filename = Ipfs.add_file t.ipfs ~filename
-
-  let fetch t hash = Ipfs.cat t.ipfs hash
-
-  let download t ~output hash =
-    let* x = fetch t hash in
-    match x with
-    | Ok s ->
-        let* () = Lwt_io.chars_to_file output (Lwt_stream.of_string s) in
-        Lwt.return_ok ()
-    | Error e -> Lwt.return_error e
 end
 
 let src = Logs.Src.create "irmin-ipfs" ~doc:"Irmin IPFS"
@@ -75,8 +17,6 @@ let uri =
 
 module Pack_config = Irmin_pack.Config
 module Index = Irmin_pack.Index
-
-let ( ++ ) = Int64.add
 
 module Cid = struct
   type t = [ `Cid of string ]
@@ -93,6 +33,10 @@ module Cid = struct
     (* TODO: hash this without making HTTP request *)
     Ipfs.hash' Ipfs.default (Buffer.contents buf)
 end
+
+let config ?uri:u ~root =
+  let config = Irmin_pack.config root in
+  match u with Some u -> Irmin.Private.Conf.add config uri u | None -> config
 
 module Make_ext
     (M : Irmin.Metadata.S)
@@ -117,7 +61,6 @@ struct
       let io_version = `V2
     end
 
-    module St = Store
     module Index = Irmin_pack.Index.Make (H)
     module Pack = Irmin_pack.Pack.File (Index) (H) (Version)
 

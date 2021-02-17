@@ -6,11 +6,11 @@ module Key = struct
 
   let gen ?(len = 32) () = Key (Cryptokit.Random.(string secure_rng) len)
 
-  let of_file filename =
+  let of_file ~filename =
     let+ x = Lwt_io.chars_of_file filename |> Lwt_stream.to_string in
-    Ok (Key x)
+    Key x
 
-  let to_file (Key t) filename =
+  let to_file (Key t) ~filename =
     Lwt_io.chars_to_file filename (Lwt_stream.of_string t)
 end
 
