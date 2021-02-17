@@ -15,24 +15,6 @@ module Log = (val Logs.src_log src : Logs.LOG)
 module Pack_config = Irmin_pack.Config
 module Index = Irmin_pack.Index
 
-module Cid = struct
-  type t = [ `Cid of string ]
-
-  let t = Irmin.Type.(map string (fun x -> `Cid x) (fun (`Cid x) -> x))
-
-  let short_hash x = Hashtbl.hash x
-
-  let hash_size = 46
-
-  let hash' ipfs f =
-    let buf = Buffer.create 64 in
-    f (Buffer.add_string buf);
-    (* TODO: hash this without making HTTP request *)
-    Ipfs.hash' ipfs (Buffer.contents buf)
-
-  let hash = hash' Ipfs.default
-end
-
 let config ~root = Irmin_pack.config root
 
 type 'a client = { ipfs : Ipfs.t }
@@ -43,8 +25,14 @@ module Conn = struct
   end
 
   module Default = struct
-    let ipfs = Ipfs.default
+    let ipfs = !Ipfs.default
   end
+end
+
+module type S = sig
+  module Cid : Irmin.Hash.S with type t = Ipfs.Cid.t
+
+  include Irmin.S with type hash = Cid.t
 end
 
 module Make_ext
@@ -52,38 +40,47 @@ module Make_ext
     (M : Irmin.Metadata.S)
     (C : Irmin.Contents.S)
     (P : Irmin.Path.S)
-    (B : Irmin.Branch.S)
-    (H : Irmin.Hash.S with type t = Cid.t)
-    (Node : Irmin.Private.Node.S
-              with type metadata = M.t
-               and type hash = H.t
-               and type step = P.step)
-    (Commit : Irmin.Private.Commit.S with type hash = H.t) =
+    (B : Irmin.Branch.S) =
 struct
   module X = struct
-    module Hash = struct
-      include Cid
+    module Hash : Irmin.Hash.S with type t = Ipfs.Cid.t = struct
+      type t = [ `Cid of string ]
 
-      let hash = hash' Conn.ipfs
+      let t = Irmin.Type.(map string (fun x -> `Cid x) (fun (`Cid x) -> x))
+
+      let short_hash x = Hashtbl.hash x
+
+      let hash_size = 46
+
+      let hash' ipfs f =
+        let buf = Buffer.create 64 in
+        f (Buffer.add_string buf);
+        (* TODO: hash this without making HTTP request *)
+        Ipfs.hash' ipfs (Buffer.contents buf)
+
+      let hash x = hash' Conn.ipfs x
     end
 
-    type 'a value = { hash : H.t; magic : char; v : 'a } [@@deriving irmin]
+    module Node' = Irmin.Private.Node.Make (Hash) (P) (M)
+    module Commit' = Irmin.Private.Commit.Make (Hash)
+
+    type 'a value = { hash : Hash.t; magic : char; v : 'a } [@@deriving irmin]
 
     module Version = struct
       let io_version = `V2
     end
 
-    module Index = Irmin_pack.Index.Make (H)
-    module Pack = Irmin_pack.Pack.File (Index) (H) (Version)
+    module Index = Irmin_pack.Index.Make (Hash)
+    module Pack = Irmin_pack.Pack.File (Index) (Hash) (Version)
 
     module Contents = struct
       module CA = struct
-        module Key = Cid
+        module Key = Hash
         module Val = C
 
         type 'a t = 'a client
 
-        type key = H.t
+        type key = Hash.t
 
         type value = Val.t
 
@@ -114,18 +111,18 @@ struct
     end
 
     module Node = struct
-      module CA = Irmin_pack.Inode.Make (Config) (H) (Pack) (Node)
+      module CA = Irmin_pack.Inode.Make (Config) (Hash) (Pack) (Node')
       include Irmin.Private.Node.Store (Contents) (P) (M) (CA)
     end
 
     module Commit = struct
       module CA = struct
-        module Key = H
-        module Val = Commit
+        module Key = Hash
+        module Val = Commit'
 
         module CA_Pack = Pack.Make (struct
           include Val
-          module H = Irmin.Hash.Typed (H) (Val)
+          module H = Irmin.Hash.Typed (Hash) (Val)
 
           let hash = H.hash
 
@@ -155,12 +152,12 @@ struct
 
     module Branch = struct
       module Key = B
-      module Val = H
+      module Val = Hash
       include Irmin_pack.Atomic_write (Key) (Val) (Version)
     end
 
     module Slice = Irmin.Private.Slice.Make (Contents) (Node) (Commit)
-    module Sync = Irmin.Private.Sync.None (H) (B)
+    module Sync = Irmin.Private.Sync.None (Hash) (B)
 
     module Repo = struct
       type t = {
@@ -236,9 +233,7 @@ module Make
     (C : Irmin.Contents.S)
     (P : Irmin.Path.S)
     (B : Irmin.Branch.S) =
-  Make_ext (Conn) (M) (C) (P) (B) (Cid)
-    (Irmin.Private.Node.Make (Cid) (P) (M))
-    (Irmin.Private.Commit.Make (Cid))
+  Make_ext (Conn) (M) (C) (P) (B)
 module KV (Conn : Conn.S) (C : Irmin.Contents.S) =
   Make (Conn) (Irmin.Metadata.None) (C) (Irmin.Path.String_list)
     (Irmin.Branch.String)

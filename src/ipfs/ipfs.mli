@@ -12,7 +12,7 @@ type error = [ `Msg of string | `Not_found of string | `Invalid_key ]
 
 val v : url:string -> t
 
-val default : t
+val default : t ref
 
 val hash : t -> string -> (Cid.t, error) result Lwt.t
 

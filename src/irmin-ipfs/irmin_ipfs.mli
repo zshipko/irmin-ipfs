@@ -1,5 +1,3 @@
-module Cid : Irmin.Hash.S with type t = Ipfs.Cid.t
-
 module Conn : sig
   module type S = sig
     val ipfs : Ipfs.t
@@ -21,7 +19,7 @@ module Make : functor
      and type key = P.t
      and type step = P.step
      and type branch = B.t
-     and type hash = Cid.t
+     and type hash = Ipfs.Cid.t
 
 module KV (Conn : Conn.S) (C : Irmin.Contents.S) :
   Irmin.S
@@ -30,7 +28,7 @@ module KV (Conn : Conn.S) (C : Irmin.Contents.S) :
      and type key = Irmin.Path.String_list.t
      and type step = string
      and type branch = Irmin.Branch.String.t
-     and type hash = Cid.t
+     and type hash = Ipfs.Cid.t
 
 module Default :
   Irmin.S
@@ -39,6 +37,6 @@ module Default :
      and type key = Irmin.Path.String_list.t
      and type step = string
      and type branch = Irmin.Branch.String.t
-     and type hash = Cid.t
+     and type hash = Ipfs.Cid.t
 
 val config : root:string -> Irmin.config

@@ -14,7 +14,7 @@ type t = { uri : Uri.t }
 
 let v ~url = { uri = Uri.of_string url }
 
-let default = v ~url:"http://127.0.0.1:5001"
+let default = ref (v ~url:"http://127.0.0.1:5001")
 
 let () = Curl.global_init Curl.CURLINIT_GLOBALALL
 
