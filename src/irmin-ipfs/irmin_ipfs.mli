@@ -1,6 +1,15 @@
 module Cid : Irmin.Hash.S with type t = Ipfs.Cid.t
 
+module Conn : sig
+  module type S = sig
+    val ipfs : Ipfs.t
+  end
+
+  module Default : S
+end
+
 module Make : functor
+  (Conn : Conn.S)
   (M : Irmin.Metadata.S)
   (C : Irmin.Contents.S)
   (P : Irmin.Path.S)
@@ -14,7 +23,7 @@ module Make : functor
      and type branch = B.t
      and type hash = Cid.t
 
-module KV (C : Irmin.Contents.S) :
+module KV (Conn : Conn.S) (C : Irmin.Contents.S) :
   Irmin.S
     with type metadata = unit
      and type contents = C.t
@@ -32,4 +41,4 @@ module Default :
      and type branch = Irmin.Branch.String.t
      and type hash = Cid.t
 
-val config : ?uri:Uri.t -> root:string -> Irmin.config
+val config : root:string -> Irmin.config

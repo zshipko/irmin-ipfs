@@ -12,9 +12,6 @@ let src = Logs.Src.create "irmin-ipfs" ~doc:"Irmin IPFS"
 
 module Log = (val Logs.src_log src : Logs.LOG)
 
-let uri =
-  Irmin.Private.Conf.(key "uri" uri) (Uri.of_string "http://127.0.0.1:5001")
-
 module Pack_config = Irmin_pack.Config
 module Index = Irmin_pack.Index
 
@@ -27,18 +24,31 @@ module Cid = struct
 
   let hash_size = 46
 
-  let hash f =
+  let hash' ipfs f =
     let buf = Buffer.create 64 in
     f (Buffer.add_string buf);
     (* TODO: hash this without making HTTP request *)
-    Ipfs.hash' Ipfs.default (Buffer.contents buf)
+    Ipfs.hash' ipfs (Buffer.contents buf)
+
+  let hash = hash' Ipfs.default
 end
 
-let config ?uri:u ~root =
-  let config = Irmin_pack.config root in
-  match u with Some u -> Irmin.Private.Conf.add config uri u | None -> config
+let config ~root = Irmin_pack.config root
+
+type 'a client = { ipfs : Ipfs.t }
+
+module Conn = struct
+  module type S = sig
+    val ipfs : Ipfs.t
+  end
+
+  module Default = struct
+    let ipfs = Ipfs.default
+  end
+end
 
 module Make_ext
+    (Conn : Conn.S)
     (M : Irmin.Metadata.S)
     (C : Irmin.Contents.S)
     (P : Irmin.Path.S)
@@ -51,9 +61,11 @@ module Make_ext
     (Commit : Irmin.Private.Commit.S with type hash = H.t) =
 struct
   module X = struct
-    module Hash = H
+    module Hash = struct
+      include Cid
 
-    type 'a client = { ipfs : Ipfs.t }
+      let hash = hash' Conn.ipfs
+    end
 
     type 'a value = { hash : H.t; magic : char; v : 'a } [@@deriving irmin]
 
@@ -96,9 +108,7 @@ struct
         let batch t f = f (Obj.magic t)
       end
 
-      let v uri =
-        let ipfs = Ipfs.v ~url:(Uri.to_string uri) in
-        { ipfs }
+      let v () = { ipfs = Conn.ipfs }
 
       include Irmin.Contents.Store (CA)
     end
@@ -179,8 +189,6 @@ struct
                     let commit : 'a Commit.t = (node, commit) in
                     f contents node commit)))
 
-      let uri t = Irmin.Private.Conf.get t uri
-
       let v config =
         let root = Pack_config.root config in
         let fresh = Pack_config.fresh config in
@@ -195,7 +203,7 @@ struct
               (* backpatching to add pack flush before an index flush *)
             ~fresh ~readonly ~throttle ~log_size root
         in
-        let contents = Contents.v (uri config) in
+        let contents = Contents.v () in
         let* node = Node.CA.v ~fresh ~readonly ~lru_size ~index root in
         let* commit = Commit.CA.v ~fresh ~readonly ~lru_size ~index root in
         let+ branch = Branch.v ~fresh ~readonly root in
@@ -223,13 +231,15 @@ struct
 end
 
 module Make
+    (Conn : Conn.S)
     (M : Irmin.Metadata.S)
     (C : Irmin.Contents.S)
     (P : Irmin.Path.S)
     (B : Irmin.Branch.S) =
-  Make_ext (M) (C) (P) (B) (Cid)
+  Make_ext (Conn) (M) (C) (P) (B) (Cid)
     (Irmin.Private.Node.Make (Cid) (P) (M))
     (Irmin.Private.Commit.Make (Cid))
-module KV (C : Irmin.Contents.S) =
-  Make (Irmin.Metadata.None) (C) (Irmin.Path.String_list) (Irmin.Branch.String)
-module Default = KV (Irmin.Contents.String)
+module KV (Conn : Conn.S) (C : Irmin.Contents.S) =
+  Make (Conn) (Irmin.Metadata.None) (C) (Irmin.Path.String_list)
+    (Irmin.Branch.String)
+module Default = KV (Conn.Default) (Irmin.Contents.String)
