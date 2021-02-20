@@ -2,20 +2,28 @@ open Lwt.Syntax
 open Lwt.Infix
 module Ipfs = Ipfs
 
-module Config = struct
-  let stable_hash = 32
-
-  let entries = 256
-end
-
 let src = Logs.Src.create "irmin-ipfs" ~doc:"Irmin IPFS"
+
+let ( // ) = Filename.concat
 
 module Log = (val Logs.src_log src : Logs.LOG)
 
-module Pack_config = Irmin_pack.Config
-module Index = Irmin_pack.Index
+let rec mkdir_all ?(mode = 0o755) path =
+  let parent = Filename.dirname path in
+  let* parent_exists = Lwt_unix.file_exists parent in
+  let* () =
+    if not parent_exists then mkdir_all ~mode parent else Lwt.return_unit
+  in
+  Lwt.catch
+    (fun () -> Lwt_unix.mkdir path mode)
+    (function
+      | Unix.Unix_error (Unix.EEXIST, _, _) -> Lwt.return_unit
+      | exn -> raise exn)
 
-let config ~root = Irmin_pack.config root
+let config ~root:r =
+  let cfg = Irmin.Private.Conf.empty in
+  let cfg = Irmin.Private.Conf.(add cfg root (Some r)) in
+  cfg
 
 type 'a client = { ipfs : Ipfs.t }
 
@@ -29,27 +37,7 @@ module Conn = struct
   end
 end
 
-module type S = sig
-  include Irmin.S
-
-  val reconstruct_index : ?output:string -> Irmin.config -> unit
-
-  val flush : repo -> unit
-  (** [flush t] flush read-write pack on disk. Raises [RO_Not_Allowed] if called
-      by a readonly instance.*)
-
-  val sync : repo -> unit
-
-  val clear : repo -> unit Lwt.t
-
-  val integrity_check :
-    ?ppf:Format.formatter ->
-    auto_repair:bool ->
-    repo ->
-    ( [> `Fixed of int | `No_error ],
-      [> `Cannot_fix of string | `Corrupted of int ] )
-    result
-end
+module type S = Irmin.S
 
 module Make_ext
     (Conn : Conn.S)
@@ -97,13 +85,6 @@ struct
 
     type 'a value = { hash : Hash.t; magic : char; v : 'a } [@@deriving irmin]
 
-    module Version = struct
-      let io_version = `V2
-    end
-
-    module Index = Irmin_pack.Index.Make (Hash)
-    module Pack = Irmin_pack.Pack.File (Index) (Hash) (Version)
-
     module Contents = struct
       module CA = struct
         module Key = Hash
@@ -141,8 +122,72 @@ struct
       include Irmin.Contents.Store (CA)
     end
 
+    type 'a store = { root : string; ipfs : Ipfs.t }
+
+    module CA_inner
+        (Key : Irmin.Type.S with type t = Ipfs.Cid.t)
+        (Val : Irmin.Type.S) (Name : sig
+          val name : string
+        end) =
+    struct
+      let unsafe_add_s ~path value =
+        Lwt_io.chars_to_file path (Lwt_stream.of_string value)
+
+      let to_raw = Irmin.Type.(unstage @@ to_bin_string Val.t)
+
+      let of_raw = Irmin.Type.(unstage @@ of_bin_string Val.t)
+
+      let unsafe_add t key value =
+        let key = Ipfs.Cid.to_string key in
+        let value = to_raw value in
+        let path = t.root // Name.name // key in
+        unsafe_add_s ~path value
+
+      let add t value =
+        let value = to_raw value in
+        let hash = Ipfs.hash' t.ipfs value in
+        let key = Ipfs.Cid.to_string hash in
+        let path = t.root // Name.name // key in
+        let+ () = unsafe_add_s ~path value in
+        hash
+
+      let find t key =
+        let key = Ipfs.Cid.to_string key in
+        let path = t.root // Name.name // key in
+        let* exists = Lwt_unix.file_exists path in
+        if exists then
+          let+ s = Lwt_io.chars_of_file path |> Lwt_stream.to_string in
+          match of_raw s with Ok x -> Some x | _ -> None
+        else Lwt.return_none
+
+      let mem t key =
+        let key = Ipfs.Cid.to_string key in
+        let path = t.root // Name.name // key in
+        Lwt_unix.file_exists path
+
+      let batch x f = f (Obj.magic x)
+
+      let clear _ = Lwt.return_unit
+    end
+
     module Node = struct
-      module CA = Irmin_pack.Inode.Make (Config) (Hash) (Pack) (Node')
+      module CA = struct
+        module Key = Hash
+        module Val = Node'
+
+        type 'a t = 'a store
+
+        type key = Key.t
+
+        type value = Val.t
+
+        include
+          CA_inner (Key) (Val)
+            (struct
+              let name = "node"
+            end)
+      end
+
       include Irmin.Private.Node.Store (Contents) (P) (M) (CA)
     end
 
@@ -151,31 +196,17 @@ struct
         module Key = Hash
         module Val = Commit'
 
-        module CA_Pack = Pack.Make (struct
-          include Val
-          module H = Irmin.Hash.Typed (Hash) (Val)
+        type 'a t = 'a store
 
-          let hash = H.hash
+        type key = Key.t
 
-          let value = value_t Val.t
+        type value = Val.t
 
-          let magic = 'C'
-
-          let encode_value = Irmin.Type.(unstage (encode_bin value))
-
-          let decode_value = Irmin.Type.(unstage (decode_bin value))
-
-          let encode_bin ~dict:_ ~offset:_ v hash =
-            encode_value { magic; hash; v }
-
-          let decode_bin ~dict:_ ~hash:_ s off =
-            let _, v = decode_value s off in
-            v.v
-
-          let magic _ = magic
-        end)
-
-        include Irmin_pack.Private.Closeable.Content_addressable (CA_Pack)
+        include
+          CA_inner (Key) (Val)
+            (struct
+              let name = "commit"
+            end)
       end
 
       include Irmin.Private.Commit.Store (Node) (CA)
@@ -184,7 +215,78 @@ struct
     module Branch = struct
       module Key = B
       module Val = Hash
-      include Irmin_pack.Atomic_write (Key) (Val) (Version)
+
+      module Name = struct
+        let name = "branch"
+      end
+
+      type t = unit store
+
+      type key = Key.t
+
+      type value = Val.t
+
+      let find t key =
+        let key = Irmin.Type.to_string Key.t key in
+        let path = t.root // Name.name // key in
+        let* exists = Lwt_unix.file_exists path in
+        if exists then
+          let+ s = Lwt_io.chars_of_file path |> Lwt_stream.to_string in
+          Some (Ipfs.Cid.of_string s)
+        else Lwt.return_none
+
+      let mem t key =
+        let key = Irmin.Type.to_string Key.t key in
+        let path = t.root // Name.name // key in
+        Lwt_unix.file_exists path
+
+      let clear _ = Lwt.return_unit
+
+      let close _ = Lwt.return_unit
+
+      type watch = unit
+
+      let watch _t ?init:_ _ = Lwt.return_unit
+
+      let watch_key _t _ ?init:_ _ = Lwt.return_unit
+
+      let unwatch _t _ = Lwt.return_unit
+
+      let list t =
+        let path = t.root // Name.name in
+        Lwt_unix.files_of_directory path
+        |> Lwt_stream.filter_map (fun x ->
+               if String.length x < 1 || x.[0] = '.' then None
+               else
+                 match Irmin.Type.of_string B.t x with
+                 | Ok x -> Some x
+                 | _ -> None)
+        |> Lwt_stream.to_list
+
+      let remove t key =
+        let key = Irmin.Type.to_string Key.t key in
+        let path = t.root // Name.name // key in
+        Lwt_unix.unlink path
+
+      let set t key value =
+        let key = Irmin.Type.to_string Key.t key in
+        let path = t.root // Name.name // key in
+        let value = Ipfs.Cid.to_string value in
+        Lwt_io.chars_to_file path (Lwt_stream.of_string value)
+
+      let eq = Irmin.Type.(unstage @@ equal (option Val.t))
+
+      let test_and_set t key ~test ~set:s =
+        let* a = find t key in
+        if eq a test then
+          match s with
+          | Some s ->
+              let* () = set t key s in
+              Lwt.return_true
+          | None ->
+              let* () = remove t key in
+              Lwt.return_true
+        else Lwt.return_false
     end
 
     module Slice = Irmin.Private.Slice.Make (Contents) (Node) (Commit)
@@ -197,7 +299,6 @@ struct
         node : Irmin.Perms.read Node.CA.t;
         commit : Irmin.Perms.read Commit.CA.t;
         branch : Branch.t;
-        index : Index.t;
       }
 
       let contents_t t : 'a Contents.t = t.contents
@@ -217,186 +318,24 @@ struct
                     let commit : 'a Commit.t = (node, commit) in
                     f contents node commit)))
 
-      let flush t =
-        Index.flush t.index;
-        Commit.CA.flush ~index:true (snd (commit_t t))
-
-      let sync t =
-        Index.sync t.index;
-        Commit.CA.sync (snd (commit_t t));
-        Node.CA.sync (snd (node_t t))
-
-      let close t =
-        (try flush t with _ -> ());
-        Index.close t.index;
-        let* () = Node.CA.close (snd (node_t t)) in
-        let* () = Branch.close t.branch in
-        Commit.CA.close (snd (commit_t t))
-
       let v config =
-        let root = Pack_config.root config in
-        let fresh = Pack_config.fresh config in
-        let lru_size = Pack_config.lru_size config in
-        let readonly = Pack_config.readonly config in
-        let log_size = Pack_config.index_log_size config in
-        let throttle = Pack_config.merge_throttle config in
-        let f = ref (fun () -> ()) in
-        let index =
-          Index.v
-            ~flush_callback:(fun () -> !f ())
-              (* backpatching to add pack flush before an index flush *)
-            ~fresh ~readonly ~throttle ~log_size root
+        let root =
+          Irmin.Private.Conf.(get config root)
+          |> Option.value ~default:"/tmp/irmin-ipfs"
         in
         let contents = Contents.v () in
-        let* node = Node.CA.v ~fresh ~readonly ~lru_size ~index root in
-        let* commit = Commit.CA.v ~fresh ~readonly ~lru_size ~index root in
-        let+ branch = Branch.v ~fresh ~readonly root in
-        (* Stores share instances in memory, one flush is enough. In case of a
-           system crash, the flush_callback might not make with the disk. In
-           this case, when the store is reopened, [integrity_check] needs to be
-           called to repair the store. *)
-        let x = { contents; node; commit; branch; config; index } in
-        (f := fun () -> flush x);
-        Gc.finalise (fun x -> flush x) x;
-        x
+        let store = { ipfs = Conn.ipfs; root } in
+        let node = store in
+        let commit = store in
+        let branch = store in
+        let* () = mkdir_all (root // "node") in
+        let* () = mkdir_all (root // "commit") in
+        let+ () = mkdir_all (root // "branch") in
+        { contents; node; commit; branch; config }
 
-      (*Commit.CA.close (snd (commit_t t)) >>= fun () -> Branch.close t.branch*)
-
-      (** Stores share instances so one clear is enough. *)
-
-      let clear t =
-        let* () = Branch.clear (branch_t t) in
-        let* () = Commit.CA.clear (snd (commit_t t)) in
-        let* () = Node.CA.clear (snd (node_t t)) in
-        Contents.CA.clear (contents_t t)
-
-      module Dict = Irmin_pack.Dict.Make (Version)
-
-      module Reconstruct_index = struct
-        let pp_hash = Irmin.Type.pp Hash.t
-
-        let decode_contents =
-          Irmin.Type.(unstage (decode_bin (value_t Contents.Val.t)))
-
-        let decode_commit =
-          Irmin.Type.(unstage (decode_bin (value_t Commit.Val.t)))
-
-        let decode_key = Irmin.Type.(unstage (decode_bin Hash.t))
-
-        let decode_magic = Irmin.Type.(unstage (decode_bin char))
-
-        let decode_buffer ~progress ~total pack dict index =
-          let decode_len buf magic =
-            try
-              let len =
-                match magic with
-                | 'B' -> decode_contents buf 0 |> fst
-                | 'C' -> decode_commit buf 0 |> fst
-                | 'N' | 'I' ->
-                    let hash off =
-                      let buf =
-                        Irmin_pack.Private.IO.Unix.read_buffer
-                          ~chunk:Hash.hash_size ~off pack
-                      in
-                      decode_key buf 0 |> snd
-                    in
-                    let dict = Dict.find dict in
-                    Node.CA.decode_bin ~hash ~dict buf 0
-                | _ -> failwith "unexpected magic char"
-              in
-              Some len
-            with
-            | Invalid_argument msg when msg = "index out of bounds" -> None
-            | Invalid_argument msg when msg = "String.blit / Bytes.blit_string"
-              ->
-                None
-          in
-          let decode_entry buf off =
-            let off_k, k = decode_key buf 0 in
-            assert (off_k = Hash.hash_size);
-            let off_m, magic = decode_magic buf off_k in
-            assert (off_m = Hash.hash_size + 1);
-            match decode_len buf magic with
-            | Some len ->
-                let new_off = Int64.add off @@ Int64.of_int len in
-                Log.debug (fun l ->
-                    l "k = %a (off, len, magic) = (%Ld, %d, %c)" pp_hash k off
-                      len magic);
-                Index.add index k (off, len, magic);
-                progress (Int64.of_int len);
-                Some new_off
-            | None -> None
-          in
-          let rec read_and_decode ?(retries = 1) off =
-            Log.debug (fun l ->
-                l "read_and_decode retries %d off %Ld" retries off);
-            let chunk = 64 * 10 * retries in
-            let buf = Irmin_pack.Private.IO.Unix.read_buffer ~chunk ~off pack in
-            match decode_entry buf off with
-            | Some new_off -> new_off
-            | None ->
-                (* the biggest entry in a tezos store is a blob of 54801B *)
-                if retries > 90 then
-                  failwith "too many retries to read data, buffer size = 57600B"
-                else (read_and_decode [@tailcall]) ~retries:(retries + 1) off
-          in
-          let rec read_buffer off =
-            if off >= total then ()
-            else
-              let new_off = read_and_decode off in
-              (read_buffer [@tailcall]) new_off
-          in
-          read_buffer 0L
-
-        let reconstruct ?output config =
-          if Pack_config.readonly config then
-            raise Irmin_pack.Private.IO.Unix.RO_Not_Allowed;
-          Log.info (fun l ->
-              l "[%s] reconstructing index" (Pack_config.root config));
-          let root = Pack_config.root config in
-          let dest = match output with Some path -> path | None -> root in
-          let log_size = Pack_config.index_log_size config in
-          let index = Index.v ~fresh:true ~readonly:false ~log_size dest in
-          let pack_file = Filename.concat root "store.pack" in
-          let pack =
-            Irmin_pack.Private.IO.Unix.v ~fresh:false ~readonly:true
-              ~version:(Some Version.io_version) pack_file
-          in
-          let dict = Dict.v ~fresh:false ~readonly:true root in
-          let total = Irmin_pack.Private.IO.Unix.offset pack in
-          let bar, progress =
-            Irmin_pack.Private.Utils.Progress.counter ~total
-              ~sampling_interval:100 ~message:"Reconstructing index"
-              ~pp_count:Irmin_pack.Private.Utils.pp_bytes ()
-          in
-          decode_buffer ~progress ~total pack dict index;
-          Index.close index;
-          Irmin_pack.Private.IO.Unix.close pack;
-          Dict.close dict;
-          Irmin_pack.Private.Utils.Progress.finalise bar
-      end
+      let close t = Branch.clear t.branch
     end
   end
-
-  let integrity_check ?ppf ~auto_repair t =
-    let module Checks = Irmin_pack.Store.Checks (X.Index) in
-    let nodes = X.Repo.node_t t |> snd in
-    let commits = X.Repo.commit_t t |> snd in
-    let check ~kind ~offset ~length k =
-      match kind with
-      | `Contents -> Ok ()
-      | `Node -> X.Node.CA.integrity_check ~offset ~length k nodes
-      | `Commit -> X.Commit.CA.integrity_check ~offset ~length k commits
-    in
-    Checks.integrity_check ?ppf ~auto_repair ~check t.index
-
-  let reconstruct_index = X.Repo.Reconstruct_index.reconstruct
-
-  let flush = X.Repo.flush
-
-  let sync = X.Repo.sync
-
-  let clear = X.Repo.clear
 
   include Irmin.Of_private (X)
 end

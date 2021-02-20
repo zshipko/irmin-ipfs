@@ -6,27 +6,7 @@ module Conn : sig
   module Default : S
 end
 
-module type S = sig
-  include Irmin.S
-
-  val reconstruct_index : ?output:string -> Irmin.config -> unit
-
-  val flush : repo -> unit
-  (** [flush t] flush read-write pack on disk. Raises [RO_Not_Allowed] if called
-      by a readonly instance.*)
-
-  val sync : repo -> unit
-
-  val clear : repo -> unit Lwt.t
-
-  val integrity_check :
-    ?ppf:Format.formatter ->
-    auto_repair:bool ->
-    repo ->
-    ( [> `Fixed of int | `No_error ],
-      [> `Cannot_fix of string | `Corrupted of int ] )
-    result
-end
+module type S = Irmin.S
 
 module Make : functor
   (Conn : Conn.S)
