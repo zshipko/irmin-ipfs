@@ -6,6 +6,8 @@ let src = Logs.Src.create "irmin-ipfs" ~doc:"Irmin IPFS"
 
 let ( // ) = Filename.concat
 
+(* TODO: locking *)
+
 module Log = (val Logs.src_log src : Logs.LOG)
 
 let rec mkdir_all ?(mode = 0o755) path =
@@ -220,7 +222,15 @@ struct
         let name = "branch"
       end
 
-      type t = unit store
+      module W = Irmin.Private.Watch.Make (Key) (Val)
+
+      type watch = W.watch
+
+      type t = { w : W.t; store : unit store }
+
+      let v store =
+        let w = W.v () in
+        { w; store }
 
       type key = Key.t
 
@@ -228,7 +238,7 @@ struct
 
       let find t key =
         let key = Irmin.Type.to_string Key.t key in
-        let path = t.root // Name.name // key in
+        let path = t.store.root // Name.name // key in
         let* exists = Lwt_unix.file_exists path in
         if exists then
           let+ s = Lwt_io.chars_of_file path |> Lwt_stream.to_string in
@@ -237,23 +247,21 @@ struct
 
       let mem t key =
         let key = Irmin.Type.to_string Key.t key in
-        let path = t.root // Name.name // key in
+        let path = t.store.root // Name.name // key in
         Lwt_unix.file_exists path
 
       let clear _ = Lwt.return_unit
 
       let close _ = Lwt.return_unit
 
-      type watch = unit
+      let watch_key t key ?init f = W.watch_key t.w key ?init f
 
-      let watch _t ?init:_ _ = Lwt.return_unit
+      let watch t ?init f = W.watch t.w ?init f
 
-      let watch_key _t _ ?init:_ _ = Lwt.return_unit
-
-      let unwatch _t _ = Lwt.return_unit
+      let unwatch t id = W.unwatch t.w id
 
       let list t =
-        let path = t.root // Name.name in
+        let path = t.store.root // Name.name in
         Lwt_unix.files_of_directory path
         |> Lwt_stream.filter_map (fun x ->
                if String.length x < 1 || x.[0] = '.' then None
@@ -265,12 +273,12 @@ struct
 
       let remove t key =
         let key = Irmin.Type.to_string Key.t key in
-        let path = t.root // Name.name // key in
+        let path = t.store.root // Name.name // key in
         Lwt_unix.unlink path
 
       let set t key value =
         let key = Irmin.Type.to_string Key.t key in
-        let path = t.root // Name.name // key in
+        let path = t.store.root // Name.name // key in
         let value = Ipfs.Cid.to_string value in
         Lwt_io.chars_to_file path (Lwt_stream.of_string value)
 
@@ -327,7 +335,7 @@ struct
         let store = { ipfs = Conn.ipfs; root } in
         let node = store in
         let commit = store in
-        let branch = store in
+        let branch = Branch.v store in
         let* () = mkdir_all (root // "node") in
         let* () = mkdir_all (root // "commit") in
         let+ () = mkdir_all (root // "branch") in
