@@ -151,38 +151,6 @@ let download t ~output hash : (unit, error) result Lwt.t =
       Lwt.return_ok ()
   | Error e -> Lwt.return_error e
 
-module Encrypted = struct
-  module Secret = Crypto.Key
-
-  let add t ~secret ?name data =
-    let s = Crypto.encrypt ~key:secret data in
-    add t ?name s
-
-  let add_file t ~secret ~filename =
-    Crypto.with_encrypted_file ~key:secret filename (fun tmp ->
-        add_file t ~filename:tmp)
-
-  let cat t ~secret hash =
-    let+ data = cat t hash in
-    match data with
-    | Ok data ->
-        let s = Crypto.decrypt ~key:secret data in
-        Ok s
-    | Error e -> Error e
-
-  let download t ~secret ~output hash =
-    let* x = cat t ~secret hash in
-    match x with
-    | Ok (Some s) -> (
-        match Crypto.decrypt ~key:secret s with
-        | Some x ->
-            let* () = Lwt_io.chars_to_file output (Lwt_stream.of_string x) in
-            Lwt.return_ok ()
-        | None -> Lwt.return_error (`Not_found (Cid.to_string hash)))
-    | Ok None -> Lwt.return_error `Invalid_key
-    | Error e -> Lwt.return_error (e :> error)
-end
-
 module Pin = struct
   let add t hash =
     let url = url ~query:[ ("arg", Cid.to_string hash) ] t "/pin/add" in
