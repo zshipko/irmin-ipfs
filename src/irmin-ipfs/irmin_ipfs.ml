@@ -117,6 +117,8 @@ struct
         let mem t key = find t key >|= Option.is_some
 
         let batch t f = f (Obj.magic t)
+
+        let close _t = Lwt.return_unit
       end
 
       let v () = { ipfs = Conn.ipfs }
@@ -170,6 +172,8 @@ struct
       let batch x f = f (Obj.magic x)
 
       let clear _ = Lwt.return_unit
+
+      let close _ = Lwt.return_unit
     end
 
     module Node = struct
@@ -298,7 +302,7 @@ struct
     end
 
     module Slice = Irmin.Private.Slice.Make (Contents) (Node) (Commit)
-    module Sync = Irmin.Private.Sync.None (Hash) (B)
+    module Remote = Irmin.Private.Remote.None (Hash) (B)
 
     module Repo = struct
       type t = {
