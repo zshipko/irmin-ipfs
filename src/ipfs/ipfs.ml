@@ -160,3 +160,31 @@ module Pin = struct
     let url = url ~query:[ ("arg", Cid.to_string hash) ] t "/pin/rm" in
     request url
 end
+
+module Daemon = struct
+  type t = { proc : Lwt_process.process_none option }
+
+  let is_running () =
+    let home = Unix.getenv "HOME" in
+    let file = Filename.concat home ".ipfs/api" in
+    Lwt_unix.file_exists file
+
+  let start ?(wait = 5.0) () =
+    let* is_running = is_running () in
+    if not is_running then (
+      let proc =
+        Lwt_process.open_process_none (Lwt_process.shell "ipfs daemon --init &")
+      in
+      let+ () = Lwt_unix.sleep wait in
+      let x = { proc = Some proc } in
+      Gc.finalise (fun _ -> proc#terminate) x;
+      x)
+    else Lwt.return { proc = None }
+
+  let stop { proc; _ } =
+    match proc with
+    | Some proc ->
+        let+ _status = proc#close in
+        ()
+    | None -> Lwt.return_unit
+end

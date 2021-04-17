@@ -1,0 +1,4 @@
+(test
+ (name test)
+ (package irmin-ipfs)
+ (libraries irmin-ipfs))

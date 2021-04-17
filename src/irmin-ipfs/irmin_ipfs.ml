@@ -123,7 +123,7 @@ struct
 
       let v () = { ipfs = Conn.ipfs }
 
-      include Irmin.Contents.Store (CA)
+      include Irmin.Contents.Store (CA) (Hash) (C)
     end
 
     type 'a store = { root : string; ipfs : Ipfs.t }
@@ -194,7 +194,7 @@ struct
             end)
       end
 
-      include Irmin.Private.Node.Store (Contents) (P) (M) (CA)
+      include Irmin.Private.Node.Store (Contents) (CA) (Hash) (Node') (M) (P)
     end
 
     module Commit = struct
@@ -215,7 +215,7 @@ struct
             end)
       end
 
-      include Irmin.Private.Commit.Store (Node) (CA)
+      include Irmin.Private.Commit.Store (Node) (CA) (Hash) (Commit')
     end
 
     module Branch = struct
