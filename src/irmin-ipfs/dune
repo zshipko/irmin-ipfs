@@ -2,4 +2,5 @@
  (name irmin_ipfs)
  (public_name irmin-ipfs)
  (libraries irmin-unix ipfs)
- (preprocess (pps ppx_irmin)))
+ (preprocess
+  (pps ppx_irmin)))

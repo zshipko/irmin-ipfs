@@ -215,7 +215,9 @@ struct
             end)
       end
 
-      include Irmin.Private.Commit.Store (Node) (CA) (Hash) (Commit')
+      include
+        Irmin.Private.Commit.Store (Irmin.Info.Default) (Node) (CA) (Hash)
+          (Commit')
     end
 
     module Branch = struct
