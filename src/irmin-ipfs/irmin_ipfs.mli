@@ -10,35 +10,32 @@ module type S = Irmin.S
 
 module Make : functor
   (Conn : Conn.S)
-  (M : Irmin.Metadata.S)
-  (C : Irmin.Contents.S)
-  (P : Irmin.Path.S)
-  (B : Irmin.Branch.S)
+  (Schema : Irmin.Schema.S with type Hash.t = Ipfs.Cid.t)
   ->
   S
-    with type metadata = M.t
-     and type contents = C.t
-     and type key = P.t
-     and type step = P.step
-     and type branch = B.t
+    with type Schema.Metadata.t = Schema.Metadata.t
+     and type Schema.Contents.t = Schema.Contents.t
+     and type Schema.Path.t = Schema.Path.t
+     and type Schema.Path.step = Schema.Path.step
+     and type Schema.Branch.t = Schema.Branch.t
      and type hash = Ipfs.Cid.t
 
 module KV (Conn : Conn.S) (C : Irmin.Contents.S) :
   S
-    with type metadata = unit
-     and type contents = C.t
-     and type key = Irmin.Path.String_list.t
-     and type step = string
-     and type branch = Irmin.Branch.String.t
+    with type Schema.Metadata.t = unit
+     and type Schema.Contents.t = C.t
+     and type Schema.Path.t = string list
+     and type Schema.Path.step = string
+     and type Schema.Branch.t = string
      and type hash = Ipfs.Cid.t
 
 module Default :
   S
-    with type metadata = unit
-     and type contents = string
-     and type key = Irmin.Path.String_list.t
-     and type step = string
-     and type branch = Irmin.Branch.String.t
+    with type Schema.Metadata.t = unit
+     and type Schema.Contents.t = string
+     and type Schema.Path.t = string list
+     and type Schema.Path.step = string
+     and type Schema.Branch.t = string
      and type hash = Ipfs.Cid.t
 
 val config : root:string -> Irmin.config

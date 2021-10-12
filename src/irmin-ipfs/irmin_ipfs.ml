@@ -22,9 +22,13 @@ let rec mkdir_all ?(mode = 0o755) path =
       | Unix.Unix_error (Unix.EEXIST, _, _) -> Lwt.return_unit
       | exn -> raise exn)
 
+let spec = Irmin.Backend.Conf.Spec.v "ipfs"
+
+let root = Irmin.Backend.Conf.root spec
+
 let config ~root:r =
-  let cfg = Irmin.Private.Conf.empty in
-  let cfg = Irmin.Private.Conf.(add cfg root (Some r)) in
+  let cfg = Irmin.Backend.Conf.empty spec in
+  let cfg = Irmin.Backend.Conf.add cfg root r in
   cfg
 
 type 'a client = { ipfs : Ipfs.t }
@@ -41,56 +45,56 @@ end
 
 module type S = Irmin.S
 
+module Hash (Conn : Conn.S) : Irmin.Hash.S with type t = Ipfs.Cid.t = struct
+  type t = [ `Cid of string ]
+
+  let t = Irmin.Type.(map string (fun x -> `Cid x) (fun (`Cid x) -> x))
+
+  let short_hash x = Hashtbl.hash x
+
+  let hash_size = 46
+
+  module Cache = Irmin.Backend.Lru.Make (struct
+    type t = string
+
+    let hash = Hashtbl.hash
+
+    let equal = String.equal
+  end)
+
+  let cache = Cache.create 64
+
+  let hash' ipfs f =
+    (* TODO: make this work without making HTTP request *)
+    let buf = Buffer.create 64 in
+    let () = f (Buffer.add_string buf) in
+    let s = Buffer.contents buf in
+    if Cache.mem cache s then Cache.find cache s
+    else
+      let hash = Ipfs.hash' ipfs (Buffer.contents buf) in
+      let () = Cache.add cache s hash in
+      hash
+
+  let hash x = hash' Conn.ipfs x
+end
+
 module Make_ext
     (Conn : Conn.S)
-    (M : Irmin.Metadata.S)
-    (C : Irmin.Contents.S)
-    (P : Irmin.Path.S)
-    (B : Irmin.Branch.S) =
+    (Schema : Irmin.Schema.S with type Hash.t = Ipfs.Cid.t) =
 struct
   module X = struct
-    module Hash : Irmin.Hash.S with type t = Ipfs.Cid.t = struct
-      type t = [ `Cid of string ]
-
-      let t = Irmin.Type.(map string (fun x -> `Cid x) (fun (`Cid x) -> x))
-
-      let short_hash x = Hashtbl.hash x
-
-      let hash_size = 46
-
-      module Cache = Irmin.Private.Lru.Make (struct
-        type t = string
-
-        let hash = Hashtbl.hash
-
-        let equal = String.equal
-      end)
-
-      let cache = Cache.create 64
-
-      let hash' ipfs f =
-        (* TODO: make this work without making HTTP request *)
-        let buf = Buffer.create 64 in
-        let () = f (Buffer.add_string buf) in
-        let s = Buffer.contents buf in
-        if Cache.mem cache s then Cache.find cache s
-        else
-          let hash = Ipfs.hash' ipfs (Buffer.contents buf) in
-          let () = Cache.add cache s hash in
-          hash
-
-      let hash x = hash' Conn.ipfs x
-    end
-
-    module Node' = Irmin.Private.Node.Make (Hash) (P) (M)
-    module Commit' = Irmin.Private.Commit.Make (Hash)
+    module Hash = Hash (Conn)
+    module Schema = Schema
+    module Node' = Irmin.Node.Make (Hash) (Schema.Path) (Schema.Metadata)
+    module Commit_maker = Irmin.Commit.Maker (Schema.Info)
+    module Commit' = Commit_maker.Make (Hash)
 
     type 'a value = { hash : Hash.t; magic : char; v : 'a } [@@deriving irmin]
 
     module Contents = struct
       module CA = struct
         module Key = Hash
-        module Val = C
+        module Val = Schema.Contents
 
         type 'a t = 'a client
 
@@ -123,7 +127,7 @@ struct
 
       let v () = { ipfs = Conn.ipfs }
 
-      include Irmin.Contents.Store (CA) (Hash) (C)
+      include Irmin.Contents.Store (CA) (Hash) (Schema.Contents)
     end
 
     type 'a store = { root : string; ipfs : Ipfs.t }
@@ -194,7 +198,9 @@ struct
             end)
       end
 
-      include Irmin.Private.Node.Store (Contents) (CA) (Hash) (Node') (M) (P)
+      include
+        Irmin.Node.Store (Contents) (CA) (Hash) (Node') (Schema.Metadata)
+          (Schema.Path)
     end
 
     module Commit = struct
@@ -215,20 +221,25 @@ struct
             end)
       end
 
-      include
-        Irmin.Private.Commit.Store (Irmin.Info.Default) (Node) (CA) (Hash)
-          (Commit')
+      include Irmin.Commit.Store (Schema.Info) (Node) (CA) (Hash) (Commit')
     end
 
     module Branch = struct
-      module Key = B
-      module Val = Hash
+      module Key = Schema.Branch
+
+      module Val = struct
+        include Hash
+
+        type hash = t
+
+        let to_hash x = x
+      end
 
       module Name = struct
         let name = "branch"
       end
 
-      module W = Irmin.Private.Watch.Make (Key) (Val)
+      module W = Irmin.Backend.Watch.Make (Key) (Val)
 
       type watch = W.watch
 
@@ -272,7 +283,7 @@ struct
         |> Lwt_stream.filter_map (fun x ->
                if String.length x < 1 || x.[0] = '.' then None
                else
-                 match Irmin.Type.of_string B.t x with
+                 match Irmin.Type.of_string Schema.Branch.t x with
                  | Ok x -> Some x
                  | _ -> None)
         |> Lwt_stream.to_list
@@ -303,12 +314,12 @@ struct
         else Lwt.return_false
     end
 
-    module Slice = Irmin.Private.Slice.Make (Contents) (Node) (Commit)
-    module Remote = Irmin.Private.Remote.None (Hash) (B)
+    module Slice = Irmin.Backend.Slice.Make (Contents) (Node) (Commit)
+    module Remote = Irmin.Backend.Remote.None (Hash) (Schema.Branch)
 
     module Repo = struct
       type t = {
-        config : Irmin.Private.Conf.t;
+        config : Irmin.Backend.Conf.t;
         contents : Irmin.Perms.read Contents.CA.t;
         node : Irmin.Perms.read Node.CA.t;
         commit : Irmin.Perms.read Commit.CA.t;
@@ -333,10 +344,7 @@ struct
                     f contents node commit)))
 
       let v config =
-        let root =
-          Irmin.Private.Conf.(get config root)
-          |> Option.value ~default:"/tmp/irmin-ipfs"
-        in
+        let root = Irmin.Backend.Conf.get config root in
         let contents = Contents.v () in
         let store = { ipfs = Conn.ipfs; root } in
         let node = store in
@@ -349,19 +357,28 @@ struct
 
       let close t = Branch.clear t.branch
     end
+
+    module Node_portable = Irmin.Node.Portable.Of_node (Node')
   end
 
-  include Irmin.Of_private (X)
+  include Irmin.Of_backend (X)
 end
 
 module Make
     (Conn : Conn.S)
-    (M : Irmin.Metadata.S)
-    (C : Irmin.Contents.S)
-    (P : Irmin.Path.S)
-    (B : Irmin.Branch.S) =
-  Make_ext (Conn) (M) (C) (P) (B)
+    (Schema : Irmin.Schema.S with type Hash.t = Ipfs.Cid.t) =
+  Make_ext (Conn) (Schema)
+
 module KV (Conn : Conn.S) (C : Irmin.Contents.S) =
-  Make (Conn) (Irmin.Metadata.None) (C) (Irmin.Path.String_list)
-    (Irmin.Branch.String)
+  Make
+    (Conn)
+    (struct
+      module Info = Irmin.Info.Default
+      module Metadata = Irmin.Metadata.None
+      module Branch = Irmin.Branch.String
+      module Path = Irmin.Path.String_list
+      module Contents = C
+      module Hash = Hash (Conn)
+    end)
+
 module Default = KV (Conn.Default) (Irmin.Contents.String)
