@@ -158,30 +158,45 @@ module Pin = struct
     request url
 end
 
+let devnull = Unix.openfile "/dev/null" Unix.[ O_RDWR ] 0o655
+
 module Daemon = struct
-  type t = { proc : Lwt_process.process_none option }
+  type t = { proc : int option }
 
   let is_running () =
     let home = Unix.getenv "HOME" in
     let file = Filename.concat home ".ipfs/api" in
-    Lwt_unix.file_exists file
+    try Sys.file_exists file with _ -> false
 
-  let start ?(wait = 5.0) () =
-    let* is_running = is_running () in
-    if not is_running then (
-      let proc =
-        Lwt_process.open_process_none (Lwt_process.shell "ipfs daemon --init &")
+  let start ?(wait = 1.0) () =
+    if not (is_running ()) then (
+      let pid =
+        Unix.create_process "ipfs"
+          [| "ipfs"; "daemon"; "--init" |]
+          Unix.stdin devnull devnull
       in
-      let+ () = Lwt_unix.sleep wait in
-      let x = { proc = Some proc } in
-      Gc.finalise (fun _ -> proc#terminate) x;
+      let n = ref 0 in
+      let () =
+        while not (is_running ()) do
+          if !n >= 10 then failwith "Cannot start ipfs";
+          incr n;
+          Unix.sleepf wait
+        done
+      in
+      let x = { proc = Some pid } in
+      Gc.finalise
+        (fun _ ->
+          Unix.kill pid Sys.sigint;
+          Unix.kill pid Sys.sigint)
+        x;
       x)
-    else Lwt.return { proc = None }
+    else { proc = None }
 
   let stop { proc; _ } =
     match proc with
     | Some proc ->
-        let+ _status = proc#close in
-        ()
-    | None -> Lwt.return_unit
+        let () = Unix.kill proc Sys.sigint in
+        let () = Unix.kill proc Sys.sigint in
+        ignore (Unix.waitpid [] proc)
+    | None -> ()
 end

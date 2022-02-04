@@ -1,5 +1,6 @@
+open Lwt.Infix
+open Lwt.Syntax
 module Ipfs = Ipfs
-open! Import
 
 let src = Logs.Src.create "irmin-ipfs" ~doc:"Irmin IPFS"
 let ( // ) = Filename.concat
@@ -100,13 +101,11 @@ module Conf = struct
 
   module Key = struct
     let root = root spec
-    let uri = key ~spec "uri" uri (Ipfs.uri !Ipfs.default)
   end
 end
 
-let config ?(uri = Ipfs.(uri !default)) ~root () =
+let config ~root =
   let cfg = Conf.empty Conf.spec in
-  let cfg = Conf.add cfg Conf.Key.uri uri in
   let cfg = Conf.add cfg Conf.Key.root root in
   cfg
 
@@ -271,8 +270,6 @@ struct
         let node = { ipfs = Conn.ipfs } in
         let commit = { ipfs = Conn.ipfs } in
         let branch = Branch.v store in
-        let* () = mkdir_all (root // "node") in
-        let* () = mkdir_all (root // "commit") in
         let+ () = mkdir_all (root // "branch") in
         { contents; node; commit; branch; config }
 
@@ -300,4 +297,4 @@ module KV (Conn : Conn.S) (C : Irmin.Contents.S) =
       module Hash = Hash (Conn)
     end)
 
-module Default = KV (Conn.Default) (Irmin.Contents.String)
+module Default () = KV (Conn.Default) (Irmin.Contents.String)

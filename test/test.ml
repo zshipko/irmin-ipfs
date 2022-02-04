@@ -1,18 +1,22 @@
-open Lwt.Syntax
-module Store = Irmin_ipfs.Default
-module Info = Irmin_unix.Info (Store.Info)
+open! Lwt.Syntax
+
+let server = Ipfs.Daemon.start ()
+let () = at_exit (fun () -> Ipfs.Daemon.stop server)
 
 let main =
-  let* server = Ipfs.Daemon.start () in
-  let config = Irmin_ipfs.config ~root:"/home/zach/devel/irmin-ipfs/tmp_a" () in
+  let module Store = Irmin_ipfs.Default () in
+  let config = Irmin_ipfs.config ~root:"/home/zach/devel/irmin-ipfs/tmp_a" in
   let* repo = Store.Repo.v config in
   let* master = Store.main repo in
   let* () =
-    Store.set_exn master ~info:(Info.v "test") [ "a"; "b"; "c" ] "123"
+    Store.set_exn master
+      ~info:(fun () -> Store.Info.v ~message:"test" 0L)
+      [ "a"; "b"; "c" ] "123"
   in
   let* x = Store.get master [ "a"; "b"; "c" ] in
   let* () = Store.Repo.close repo in
-  let* () = Ipfs.Daemon.stop server in
   Lwt_io.print x
 
-let () = Lwt_main.run main
+let () =
+  try Lwt_main.run main
+  with Curl.CurlException (_, _, msg) -> print_endline msg

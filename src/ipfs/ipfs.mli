@@ -22,9 +22,9 @@ val download : t -> output:string -> Cid.t -> (unit, error) result Lwt.t
 module Daemon : sig
   type t
 
-  val start : ?wait:float -> unit -> t Lwt.t
-  val stop : t -> unit Lwt.t
-  val is_running : unit -> bool Lwt.t
+  val start : ?wait:float -> unit -> t
+  val stop : t -> unit
+  val is_running : unit -> bool
 end
 
 module Pin : sig

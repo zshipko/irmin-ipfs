@@ -29,7 +29,7 @@ module KV (Conn : Conn.S) (C : Irmin.Contents.S) :
      and type Schema.Branch.t = string
      and type hash = Ipfs.Cid.t
 
-module Default :
+module Default () :
   S
     with type Schema.Metadata.t = unit
      and type Schema.Contents.t = string
@@ -38,4 +38,4 @@ module Default :
      and type Schema.Branch.t = string
      and type hash = Ipfs.Cid.t
 
-val config : ?uri:Uri.t -> root:string -> unit -> Irmin.config
+val config : root:string -> Irmin.config
