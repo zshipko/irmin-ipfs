@@ -38,4 +38,4 @@ module Default :
      and type Schema.Branch.t = string
      and type hash = Ipfs.Cid.t
 
-val config : root:string -> Irmin.config
+val config : ?uri:Uri.t -> root:string -> unit -> Irmin.config

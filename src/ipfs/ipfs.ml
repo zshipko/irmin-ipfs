@@ -6,19 +6,16 @@ module Cid = struct
   type t = [ `Cid of string ]
 
   let to_string (`Cid h) = h
-
   let of_string s = `Cid s
 end
 
 type t = { uri : Uri.t }
 
-let v ~url = { uri = Uri.of_string url }
-
-let default = ref (v ~url:"http://127.0.0.1:5001")
-
+let v ~uri = { uri }
+let default = ref (v ~uri:(Uri.of_string "http://127.0.0.1:5001"))
 let () = Curl.global_init Curl.CURLINIT_GLOBALALL
-
 let () = at_exit Curl.global_cleanup
+let uri t = t.uri
 
 let url ?(query = []) t p =
   let p = if String.length p > 0 && p.[0] <> '/' then "/" ^ p else p in

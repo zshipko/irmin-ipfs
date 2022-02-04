@@ -4,9 +4,9 @@ module Info = Irmin_unix.Info (Store.Info)
 
 let main =
   let* server = Ipfs.Daemon.start () in
-  let config = Irmin_ipfs.config ~root:"/home/zach/devel/irmin-ipfs/tmp_a" in
+  let config = Irmin_ipfs.config ~root:"/home/zach/devel/irmin-ipfs/tmp_a" () in
   let* repo = Store.Repo.v config in
-  let* master = Store.master repo in
+  let* master = Store.main repo in
   let* () =
     Store.set_exn master ~info:(Info.v "test") [ "a"; "b"; "c" ] "123"
   in

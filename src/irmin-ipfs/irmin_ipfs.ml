@@ -1,9 +1,7 @@
-open Lwt.Syntax
-open Lwt.Infix
 module Ipfs = Ipfs
+open! Import
 
 let src = Logs.Src.create "irmin-ipfs" ~doc:"Irmin IPFS"
-
 let ( // ) = Filename.concat
 
 (* TODO: locking *)
@@ -21,15 +19,6 @@ let rec mkdir_all ?(mode = 0o755) path =
     (function
       | Unix.Unix_error (Unix.EEXIST, _, _) -> Lwt.return_unit
       | exn -> raise exn)
-
-let spec = Irmin.Backend.Conf.Spec.v "ipfs"
-
-let root = Irmin.Backend.Conf.root spec
-
-let config ~root:r =
-  let cfg = Irmin.Backend.Conf.empty spec in
-  let cfg = Irmin.Backend.Conf.add cfg root r in
-  cfg
 
 type 'a client = { ipfs : Ipfs.t }
 
@@ -49,16 +38,13 @@ module Hash (Conn : Conn.S) : Irmin.Hash.S with type t = Ipfs.Cid.t = struct
   type t = [ `Cid of string ]
 
   let t = Irmin.Type.(map string (fun x -> `Cid x) (fun (`Cid x) -> x))
-
   let short_hash x = Hashtbl.hash x
-
   let hash_size = 46
 
   module Cache = Irmin.Backend.Lru.Make (struct
     type t = string
 
     let hash = Hashtbl.hash
-
     let equal = String.equal
   end)
 
@@ -78,6 +64,52 @@ module Hash (Conn : Conn.S) : Irmin.Hash.S with type t = Ipfs.Cid.t = struct
   let hash x = hash' Conn.ipfs x
 end
 
+module CA (Key : Irmin.Type.S) (Val : Irmin.Type.S) = struct
+  module Key = Key
+  module Val = Val
+
+  type 'a t = 'a client
+  type key = Key.t
+  type value = Val.t
+
+  let clear _ = Lwt.return_unit
+
+  let add t value =
+    let s = Irmin.Type.to_string Val.t value in
+    Ipfs.add ~name:"" t.ipfs s >|= Result.get_ok
+
+  let unsafe_add t _k v = add t v >|= fun _ -> ()
+
+  let find t key =
+    Ipfs.cat t.ipfs key >|= function
+    | Ok x -> (
+        match Irmin.Type.of_string Val.t x with
+        | Ok x -> Some x
+        | Error _ -> None)
+    | Error _ -> None
+
+  let mem t key = find t key >|= Option.is_some
+  let batch t f = f (Obj.magic t)
+  let close _t = Lwt.return_unit
+end
+
+module Conf = struct
+  include Irmin.Backend.Conf
+
+  let spec = Spec.v "ipfs"
+
+  module Key = struct
+    let root = root spec
+    let uri = key ~spec "uri" uri (Ipfs.uri !Ipfs.default)
+  end
+end
+
+let config ?(uri = Ipfs.(uri !default)) ~root () =
+  let cfg = Conf.empty Conf.spec in
+  let cfg = Conf.add cfg Conf.Key.uri uri in
+  let cfg = Conf.add cfg Conf.Key.root root in
+  cfg
+
 module Make_ext
     (Conn : Conn.S)
     (Schema : Irmin.Schema.S with type Hash.t = Ipfs.Cid.t) =
@@ -85,144 +117,42 @@ struct
   module X = struct
     module Hash = Hash (Conn)
     module Schema = Schema
-    module Node' = Irmin.Node.Make (Hash) (Schema.Path) (Schema.Metadata)
-    module Commit_maker = Irmin.Commit.Maker (Schema.Info)
-    module Commit' = Commit_maker.Make (Hash)
+    module Info = Schema.Info
+    module Key = Irmin.Key.Of_hash (Hash)
+    module Commit_key = Key
+    module Node_key = Key
 
     type 'a value = { hash : Hash.t; magic : char; v : 'a } [@@deriving irmin]
+    type 'a branch_store = { root : string; ipfs : Ipfs.t }
 
     module Contents = struct
-      module CA = struct
-        module Key = Hash
-        module Val = Schema.Contents
-
-        type 'a t = 'a client
-
-        type key = Hash.t
-
-        type value = Val.t
-
-        let clear _ = Lwt.return_unit
-
-        let add t value =
-          let s = Irmin.Type.to_string Val.t value in
-          Ipfs.add ~name:"" t.ipfs s >|= Result.get_ok
-
-        let unsafe_add t _k v = add t v >|= fun _ -> ()
-
-        let find t key =
-          Ipfs.cat t.ipfs key >|= function
-          | Ok x -> (
-              match Irmin.Type.of_string Val.t x with
-              | Ok x -> Some x
-              | Error _ -> None)
-          | Error _ -> None
-
-        let mem t key = find t key >|= Option.is_some
-
-        let batch t f = f (Obj.magic t)
-
-        let close _t = Lwt.return_unit
-      end
+      module CA = CA (Hash) (Schema.Contents)
 
       let v () = { ipfs = Conn.ipfs }
 
       include Irmin.Contents.Store (CA) (Hash) (Schema.Contents)
     end
 
-    type 'a store = { root : string; ipfs : Ipfs.t }
-
-    module CA_inner
-        (Key : Irmin.Type.S with type t = Ipfs.Cid.t)
-        (Val : Irmin.Type.S) (Name : sig
-          val name : string
-        end) =
-    struct
-      let unsafe_add_s ~path value =
-        Lwt_io.chars_to_file path (Lwt_stream.of_string value)
-
-      let to_raw = Irmin.Type.(unstage @@ to_bin_string Val.t)
-
-      let of_raw = Irmin.Type.(unstage @@ of_bin_string Val.t)
-
-      let unsafe_add t key value =
-        let key = Ipfs.Cid.to_string key in
-        let value = to_raw value in
-        let path = t.root // Name.name // key in
-        unsafe_add_s ~path value
-
-      let add t value =
-        let value = to_raw value in
-        let hash = Ipfs.hash' t.ipfs value in
-        let key = Ipfs.Cid.to_string hash in
-        let path = t.root // Name.name // key in
-        let+ () = unsafe_add_s ~path value in
-        hash
-
-      let find t key =
-        let key = Ipfs.Cid.to_string key in
-        let path = t.root // Name.name // key in
-        let* exists = Lwt_unix.file_exists path in
-        if exists then
-          let+ s = Lwt_io.chars_of_file path |> Lwt_stream.to_string in
-          match of_raw s with Ok x -> Some x | _ -> None
-        else Lwt.return_none
-
-      let mem t key =
-        let key = Ipfs.Cid.to_string key in
-        let path = t.root // Name.name // key in
-        Lwt_unix.file_exists path
-
-      let batch x f = f (Obj.magic x)
-
-      let clear _ = Lwt.return_unit
-
-      let close _ = Lwt.return_unit
-    end
+    module Node' = Irmin.Node.Make (Hash) (Schema.Path) (Schema.Metadata)
 
     module Node = struct
-      module CA = struct
-        module Key = Hash
-        module Val = Node'
-
-        type 'a t = 'a store
-
-        type key = Key.t
-
-        type value = Val.t
-
-        include
-          CA_inner (Key) (Val)
-            (struct
-              let name = "node"
-            end)
-      end
+      module CA = CA (Schema.Hash) (Node')
 
       include
         Irmin.Node.Store (Contents) (CA) (Hash) (Node') (Schema.Metadata)
           (Schema.Path)
     end
 
+    module Node_portable = Irmin.Node.Portable.Of_node (Node')
+    module Commit_maker = Irmin.Commit.Maker (Schema.Info)
+    module Commit' = Commit_maker.Make (Hash)
+
     module Commit = struct
-      module CA = struct
-        module Key = Hash
-        module Val = Commit'
-
-        type 'a t = 'a store
-
-        type key = Key.t
-
-        type value = Val.t
-
-        include
-          CA_inner (Key) (Val)
-            (struct
-              let name = "commit"
-            end)
-      end
-
+      module CA = CA (Hash) (Commit')
       include Irmin.Commit.Store (Schema.Info) (Node) (CA) (Hash) (Commit')
     end
+
+    module Commit_portable = Irmin.Commit.Portable.Of_commit (Commit')
 
     module Branch = struct
       module Key = Schema.Branch
@@ -242,15 +172,13 @@ struct
       module W = Irmin.Backend.Watch.Make (Key) (Val)
 
       type watch = W.watch
-
-      type t = { w : W.t; store : unit store }
+      type t = { w : W.t; store : unit branch_store }
 
       let v store =
         let w = W.v () in
         { w; store }
 
       type key = Key.t
-
       type value = Val.t
 
       let find t key =
@@ -268,13 +196,9 @@ struct
         Lwt_unix.file_exists path
 
       let clear _ = Lwt.return_unit
-
       let close _ = Lwt.return_unit
-
       let watch_key t key ?init f = W.watch_key t.w key ?init f
-
       let watch t ?init f = W.watch t.w ?init f
-
       let unwatch t id = W.unwatch t.w id
 
       let list t =
@@ -327,11 +251,8 @@ struct
       }
 
       let contents_t t : 'a Contents.t = t.contents
-
       let node_t t : 'a Node.t = (contents_t t, t.node)
-
       let commit_t t : 'a Commit.t = (node_t t, t.commit)
-
       let branch_t t = t.branch
 
       let batch t f =
@@ -344,11 +265,11 @@ struct
                     f contents node commit)))
 
       let v config =
-        let root = Irmin.Backend.Conf.get config root in
+        let root = Irmin.Backend.Conf.get config Conf.Key.root in
         let contents = Contents.v () in
         let store = { ipfs = Conn.ipfs; root } in
-        let node = store in
-        let commit = store in
+        let node = { ipfs = Conn.ipfs } in
+        let commit = { ipfs = Conn.ipfs } in
         let branch = Branch.v store in
         let* () = mkdir_all (root // "node") in
         let* () = mkdir_all (root // "commit") in
@@ -357,8 +278,6 @@ struct
 
       let close t = Branch.clear t.branch
     end
-
-    module Node_portable = Irmin.Node.Portable.Of_node (Node')
   end
 
   include Irmin.Of_backend (X)
