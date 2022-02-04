@@ -84,7 +84,9 @@ let request ?files ?file_data ?(mode = `POST) ?output url =
         Lwt.return_ok x)
       (function
         | Curl.CurlException (code, _, _) -> Lwt.return_error code
-        | exn -> raise exn)
+        | exn ->
+            Curl.cleanup req;
+            raise exn)
   in
   Curl.cleanup req;
   handle code
