@@ -7,6 +7,7 @@ end
 
 type t
 type error = [ `Msg of string | `Not_found of string | `Invalid_key ]
+type link = { name : string; hash : Cid.t; size : int }
 
 val v : uri:Uri.t -> t
 val default : t ref
@@ -17,6 +18,7 @@ val add_file : t -> filename:string -> (Cid.t, error) result Lwt.t
 val add : t -> ?name:string -> string -> (Cid.t, error) result Lwt.t
 val cat : t -> Cid.t -> (string, error) result Lwt.t
 val download : t -> output:string -> Cid.t -> (unit, error) result Lwt.t
+val ls : t -> Cid.t -> (link list, error) result Lwt.t
 
 module Daemon : sig
   type t

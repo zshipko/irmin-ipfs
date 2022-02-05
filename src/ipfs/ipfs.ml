@@ -134,7 +134,7 @@ let add t ?(name = "") s =
   let url = url t "/add" in
   let+ res = request ~output ~file_data:[ (name, s) ] url in
   Result.map
-    (fun _ ->
+    (fun () ->
       let json = Ezjsonm.from_string (Buffer.contents output) in
       Ezjsonm.find json [ "Hash" ] |> Ezjsonm.get_string |> Cid.of_string)
     res
@@ -146,6 +146,33 @@ let cat t hash =
   match res with
   | Ok () -> Ok (Buffer.contents output)
   | Error _ -> Error (`Not_found (Cid.to_string hash))
+
+type link = { name : string; hash : Cid.t; size : int }
+
+let ls t hash =
+  let output = Buffer.create 256 in
+  let url = url t ~query:[ ("arg", Cid.to_string hash) ] "/ls" in
+  let+ res = request ~output url in
+  Result.map
+    (fun () ->
+      let json = Ezjsonm.from_string (Buffer.contents output) in
+      let obj item =
+        let link (x : (string * Ezjsonm.value) list) =
+          try
+            let hash =
+              List.assoc "Hash" x |> Ezjsonm.get_string |> Cid.of_string
+            in
+            let name = List.assoc "Name" x |> Ezjsonm.get_string in
+            let size = List.assoc "Size" x |> Ezjsonm.get_int in
+            Some { name; hash; size }
+          with _ -> None
+        in
+        let f x = Ezjsonm.get_dict x |> link in
+        Ezjsonm.find item [ "Links" ]
+        |> Ezjsonm.get_list f |> List.filter_map Fun.id
+      in
+      Ezjsonm.find json [ "Objects" ] |> Ezjsonm.get_list obj |> List.hd)
+    res
 
 let download t ~output hash : (unit, error) result Lwt.t =
   let* x = cat t hash in
@@ -166,6 +193,7 @@ module Pin = struct
 end
 
 let devnull = Unix.openfile "/dev/null" Unix.[ O_RDWR ] 0o655
+let () = at_exit (fun () -> Unix.close devnull)
 
 module Daemon = struct
   type t = { proc : int option }
