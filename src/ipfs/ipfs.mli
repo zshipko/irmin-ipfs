@@ -1,5 +1,5 @@
 module Cid : sig
-  type t = [ `Cid of string ]
+  type t = [ `Cid of string | `Path of t * string ]
 
   val of_string : string -> t
   val to_string : t -> string
@@ -16,7 +16,6 @@ val hash' : t -> string -> Cid.t
 val add_file : t -> filename:string -> (Cid.t, error) result Lwt.t
 val add : t -> ?name:string -> string -> (Cid.t, error) result Lwt.t
 val cat : t -> Cid.t -> (string, error) result Lwt.t
-val get : t -> Cid.t -> (unit, error) result Lwt.t
 val download : t -> output:string -> Cid.t -> (unit, error) result Lwt.t
 
 module Daemon : sig

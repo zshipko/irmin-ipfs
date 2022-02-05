@@ -5,15 +5,20 @@ let () = at_exit (fun () -> Ipfs.Daemon.stop server)
 
 let main =
   let module Store = Irmin_ipfs.Default () in
-  let config = Irmin_ipfs.config ~root:"/home/zach/devel/irmin-ipfs/tmp_a" in
+  let config = Irmin_ipfs.config ~root:"tmp_a" in
   let* repo = Store.Repo.v config in
-  let* master = Store.main repo in
-  let* () =
-    Store.set_exn master
-      ~info:(fun () -> Store.Info.v ~message:"test" 0L)
-      [ "a"; "b"; "c" ] "123"
+  let* main = Store.main repo in
+  let* value =
+    Store.Contents.of_hash repo
+      (`Path (`Cid "QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG", "readme"))
   in
-  let* x = Store.get master [ "a"; "b"; "c" ] in
+  let value = Option.get value in
+  let* () =
+    Store.set_exn main
+      ~info:(fun () -> Store.Info.v ~message:"test" 0L)
+      [ "a"; "b"; "c" ] value
+  in
+  let* x = Store.get main [ "a"; "b"; "c" ] in
   let* () = Store.Repo.close repo in
   Lwt_io.print x
 

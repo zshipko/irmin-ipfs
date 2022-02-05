@@ -3,10 +3,19 @@ open Lwt.Syntax
 type error = [ `Msg of string | `Not_found of string | `Invalid_key ]
 
 module Cid = struct
-  type t = [ `Cid of string ]
+  type t = [ `Cid of string | `Path of t * string ]
 
-  let to_string (`Cid h) = h
-  let of_string s = `Cid s
+  let rec to_string = function
+    | `Cid s -> s
+    | `Path (a, s) -> to_string a ^ "/" ^ s
+
+  let of_string s =
+    if String.contains s '/' then
+      let s = String.split_on_char '/' s in
+      let path = List.tl s |> String.concat "/" in
+      let s = List.hd s in
+      `Path (`Cid s, path)
+    else `Cid s
 end
 
 type t = { uri : Uri.t }
@@ -137,10 +146,6 @@ let cat t hash =
   match res with
   | Ok () -> Ok (Buffer.contents output)
   | Error _ -> Error (`Not_found (Cid.to_string hash))
-
-let get t hash =
-  let url = url ~query:[ ("arg", Cid.to_string hash) ] t "/get" in
-  request url
 
 let download t ~output hash : (unit, error) result Lwt.t =
   let* x = cat t hash in

@@ -36,9 +36,9 @@ end
 module type S = Irmin.S
 
 module Hash (Conn : Conn.S) : Irmin.Hash.S with type t = Ipfs.Cid.t = struct
-  type t = [ `Cid of string ]
+  type t = Ipfs.Cid.t
 
-  let t = Irmin.Type.(map string (fun x -> `Cid x) (fun (`Cid x) -> x))
+  let t = Irmin.Type.(map string Ipfs.Cid.of_string Ipfs.Cid.to_string)
   let short_hash x = Hashtbl.hash x
   let hash_size = 46
 
